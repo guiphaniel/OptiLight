@@ -1,5 +1,12 @@
 #include <iostream>
-#include "Buffer.h"
+#include "Couleur.h"
+#include "SerialPort.hpp"
+#include <windows.h>
+#include <gdiplus.h>
+#include <memory>
+#include <string>
+#include <Wincodec.h>             // we use WIC for saving images
+#pragma comment (lib,"Gdiplus.lib")
 
 #define WIDTH 1920
 #define HEIGHT 1080
@@ -11,6 +18,7 @@
 #define PORTION (WIDTH / NB_LED)
 
 using namespace std;
+using namespace Gdiplus;
 
 const char* portName;
 SerialPort arduino;
@@ -60,12 +68,12 @@ int main() {
     return 0;
 }
 
-bool importData()
-{
+bool importData() {
 	while (true) {
 		//reinit tmpBuffer
 		for (int i = 0; i < NB_LED; i++) {
 			tmpBuffer[i].reinit();
+		}
 
 		//screen capture
 		HBITMAP hOldBitmap = (HBITMAP)SelectObject(memdc, membit);
@@ -121,10 +129,8 @@ bool importData()
 	}
 }
 
-bool exportData()
-{
-	while (true)
-	{
+bool exportData() {
+	while (true) {
 		//TODO: wait for newBuffer's mutex
 		//TODO: wait for buffer's mutex		
 		arduino.writeSerialPort(1);

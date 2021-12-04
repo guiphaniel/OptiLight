@@ -2,6 +2,8 @@
 #include "Couleur.h"
 #include "SerialPort.hpp"
 #include <windows.h>
+#include <mutex> 
+#include <thread> 
 #include <gdiplus.h>
 #include <memory>
 #include <string>
@@ -13,7 +15,7 @@
 
 #define NB_LED 40
 #define ECH_X 20
-#define ECH_Y 100
+#define ECH_Y 20
 #define AVERAGE (int(1 + ((WIDTH / NB_LED) - 1) / ECH_X) * int(1 + (HEIGHT - 1) / ECH_Y))
 #define PORTION (WIDTH / NB_LED)
 
@@ -21,50 +23,34 @@ using namespace std;
 using namespace Gdiplus;
 
 const char* portName;
-SerialPort arduino;
+SerialPort* arduino;
 Couleur tmpBuffer[NB_LED];
 Couleur buffer[NB_LED];
 Couleur oldBuffer[NB_LED];
 
+ULONG_PTR gdiplusToken;
 Bitmap* p_bmp;
 HDC scrdc, memdc;
 HBITMAP membit;
 
+mutex bufferMutex;
+bool newBuffer = false;
+
 bool importData();
-bool exportData();
+void exportData();
+void init();
+void initGDI();
+void initArduino();
+void initScreenshot();
+void cleanup();
 
-int main() {
-    // Initialize GDI+.
-    GdiplusStartupInput gdiplusStartupInput;
-    ULONG_PTR gdiplusToken;
-    GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL);    
+int main() {		
+	init();
 
-    //init arduino
-    portName = "\\\\.\\COM3";
-    arduino = SerialPort(portName);
+	thread Timport(importData);
+	Timport.join();
 
-    //init screenshot 
-    scrdc = ::GetDC(NULL);
-    memdc = CreateCompatibleDC(scrdc);
-    membit = CreateCompatibleBitmap(scrdc, WIDTH, HEIGHT);
-
-	//TODO: create mutex
-	//TODO: wait for newBuffer's mutex
-
-	//TODO: create threads
-
-    while (true) {
-        if (buffer.importData())
-        {
-            buffer.exportData();
-        }
-        buffer.reinit();
-       // Sleep(1000/(60*4)); // *4 pour reduire la latence par 4
-    }
-
-    //Shutdown GDI+
-    GdiplusShutdown(gdiplusToken);
-
+	cleanup();
     return 0;
 }
 
@@ -109,16 +95,17 @@ bool importData() {
 		if (same)
 			continue;
 
+		bufferMutex.lock();
 
 		//set buffer to tmpBuffer
-		//TODO: wait for buffer's mutex 
 		for (int i = 0; i < NB_LED; i++) {
 			buffer[i].setR(tmpBuffer[i].getR());
 			buffer[i].setG(tmpBuffer[i].getG());
 			buffer[i].setB(tmpBuffer[i].getB());
 		}
-		//TODO: release buffer's mutex 
-		//TODO: release newBuffer's mutex 
+		bufferMutex.unlock();
+		thread Texport(exportData);
+		Texport.detach();
 
 		//save buffer in oldBuffer
 		for (int i = 0; i < NB_LED; i++) {
@@ -129,16 +116,48 @@ bool importData() {
 	}
 }
 
-bool exportData() {
-	while (true) {
-		//TODO: wait for newBuffer's mutex
-		//TODO: wait for buffer's mutex		
-		arduino.writeSerialPort(1);
-		for (int i = 0; i < NB_LED; i++) {
-			arduino.writeSerialPort(char(buffer[i].getR() / AVERAGE));
-			arduino.writeSerialPort(char(buffer[i].getG() / AVERAGE));
-			arduino.writeSerialPort(char(buffer[i].getB() / AVERAGE));
-		}
-		//TODO: release buffer's mutex 
+void exportData() {
+	bufferMutex.lock();
+
+	arduino->writeSerialPort(1);
+	for (int i = 0; i < NB_LED; i++) {
+		arduino->writeSerialPort(char(buffer[i].getR() / AVERAGE));
+		arduino->writeSerialPort(char(buffer[i].getG() / AVERAGE));
+		arduino->writeSerialPort(char(buffer[i].getB() / AVERAGE));
 	}
+	bufferMutex.unlock();
+}
+
+void init()
+{
+	initGDI();
+	initArduino();
+	initScreenshot();
+}
+
+void initGDI()
+{
+	GdiplusStartupInput gdiplusStartupInput;
+	GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL);
+}
+
+void initScreenshot()
+{
+	scrdc = ::GetDC(NULL);
+	memdc = CreateCompatibleDC(scrdc);
+	membit = CreateCompatibleBitmap(scrdc, WIDTH, HEIGHT);
+}
+
+void initArduino()
+{
+	portName = "\\\\.\\COM3";
+	arduino = new SerialPort(portName);
+}
+
+void cleanup()
+{
+	//Shutdown GDI+
+	GdiplusShutdown(gdiplusToken);
+
+	delete arduino;
 }

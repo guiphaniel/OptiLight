@@ -29,9 +29,9 @@ Couleur buffer[NB_LED];
 Couleur oldBuffer[NB_LED];
 
 ULONG_PTR gdiplusToken;
-Bitmap* p_bmp;
-HDC scrdc, memdc;
-HBITMAP membit;
+HDC winDC, memDC;
+HBITMAP oldMemBM, memBM;
+BYTE* bmPointer;
 
 mutex bufferMutex;
 bool newBuffer = false;
@@ -47,8 +47,7 @@ void cleanup();
 int main() {		
 	init();
 
-	thread Timport(importData);
-	Timport.join();
+	importData();
 
 	cleanup();
     return 0;
@@ -62,26 +61,20 @@ bool importData() {
 		}
 
 		//screen capture
-		HBITMAP hOldBitmap = (HBITMAP)SelectObject(memdc, membit);
-		if (!BitBlt(memdc, 0, 0, WIDTH, HEIGHT, scrdc, 0, 0, SRCCOPY)) {
+		if (!BitBlt(memDC, 0, 0, WIDTH, HEIGHT, winDC, 0, 0, SRCCOPY)) {
 			cout << "screenshot failed" << endl;
 			return false;
 		}
 
-		p_bmp = Bitmap::FromHBITMAP(membit, NULL);
-
 		//fill tmpBuffer
-		Color c;
+		Color c; 
 		for (int y = 0; y < HEIGHT; y += ECH_Y) {
 			for (int x = 0; x < WIDTH; x += ECH_X) {
-				p_bmp->GetPixel(x, y, &c);
-				ARGB cValue = c.GetValue();
-				tmpBuffer[x / PORTION].addR((cValue & 0xFF0000) >> 17);
-				tmpBuffer[x / PORTION].addG((cValue & 0xFF00) >> 9);
-				tmpBuffer[x / PORTION].addB((cValue & 0xFF) >> 1);
+				tmpBuffer[x / PORTION].addR(bmPointer[x * 3 + y * 3* WIDTH] >> 1);
+				tmpBuffer[x / PORTION].addG(bmPointer[x * 3+ 1 + y * 3 * WIDTH] >> 1);
+				tmpBuffer[x / PORTION].addB(bmPointer[x * 3 + 2 + y * 3 * WIDTH] >> 1);
 			}
 		}
-		delete p_bmp;
 
 		//check if image is same as previous one
 		bool same = true;
@@ -143,9 +136,22 @@ void initGDI()
 
 void initScreenshot()
 {
-	scrdc = ::GetDC(NULL);
-	memdc = CreateCompatibleDC(scrdc);
-	membit = CreateCompatibleBitmap(scrdc, WIDTH, HEIGHT);
+	winDC = ::GetDC(NULL);
+	memDC = CreateCompatibleDC(winDC);
+
+	BITMAPINFO bmInfo;
+	bmInfo.bmiHeader.biSize = sizeof(bmInfo.bmiHeader);
+	bmInfo.bmiHeader.biWidth = WIDTH;
+	bmInfo.bmiHeader.biHeight = HEIGHT;
+	bmInfo.bmiHeader.biPlanes = 1;
+	bmInfo.bmiHeader.biBitCount = 32;
+	bmInfo.bmiHeader.biCompression = BI_RGB;
+	bmInfo.bmiHeader.biSizeImage = WIDTH * 3 * HEIGHT;
+	bmInfo.bmiHeader.biClrUsed = 0;
+	bmInfo.bmiHeader.biClrImportant = 0;
+	memBM = CreateDIBSection(memDC, &bmInfo, DIB_RGB_COLORS, (void**)(&bmPointer), NULL, NULL); //TODO: DIB_PAL_COLORS ??
+
+	oldMemBM = (HBITMAP)SelectObject(memDC, memBM);
 }
 
 void initArduino()
@@ -157,6 +163,8 @@ void initArduino()
 void cleanup()
 {
 	//Shutdown GDI+
+	SelectObject(memDC, oldMemBM);
+	DeleteDC(memDC);
 	GdiplusShutdown(gdiplusToken);
 
 	delete arduino;

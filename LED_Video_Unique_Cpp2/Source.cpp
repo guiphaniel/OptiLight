@@ -1,5 +1,5 @@
 #include <iostream>
-#include "Couleur.h"
+#include "Color.h"
 #include "SerialPort.hpp"
 #include <windows.h>
 #include <mutex> 
@@ -24,9 +24,9 @@ using namespace Gdiplus;
 
 const char* portName;
 SerialPort* arduino;
-Couleur tmpBuffer[NB_LED];
-Couleur buffer[NB_LED];
-Couleur oldBuffer[NB_LED];
+project::Color tmpBuffer[NB_LED];
+project::Color buffer[NB_LED];
+project::Color oldBuffer[NB_LED];
 
 ULONG_PTR gdiplusToken;
 HDC winDC, memDC;
@@ -57,7 +57,8 @@ bool importData() {
 	while (true) {
 		//reinit tmpBuffer
 		for (int i = 0; i < NB_LED; i++) {
-			tmpBuffer[i].reinit();
+			project::Color& c = tmpBuffer[i];
+			c.r = c.g = c.b = 0;
 		}
 
 		//screen capture
@@ -66,20 +67,22 @@ bool importData() {
 			return false;
 		}
 
-		//fill tmpBuffer
-		Color c; 
+		//fill tmpBuffer ; nb: bmPointer is BGR 
 		for (int y = 0; y < HEIGHT; y += ECH_Y) {
 			for (int x = 0; x < WIDTH; x += ECH_X) {
-				tmpBuffer[x / PORTION].addR(bmPointer[x * 3 + y * 3* WIDTH] >> 1);
-				tmpBuffer[x / PORTION].addG(bmPointer[x * 3+ 1 + y * 3 * WIDTH] >> 1);
-				tmpBuffer[x / PORTION].addB(bmPointer[x * 3 + 2 + y * 3 * WIDTH] >> 1);
+				project::Color& c = tmpBuffer[x / PORTION];
+				c.b += bmPointer[x * 3 + y * 3 * WIDTH] >> 1; // * 3 for pixel depth
+				c.g += bmPointer[x * 3 + 1 + y * 3 * WIDTH] >> 1;
+				c.r += bmPointer[x * 3 + 2 + y * 3 * WIDTH] >> 1;
 			}
 		}
 
 		//check if image is same as previous one
 		bool same = true;
 		for (int i = 0; i < NB_LED; i++) {
-			if (oldBuffer[i].getR() != tmpBuffer[i].getR() || oldBuffer[i].getG() != tmpBuffer[i].getG() || oldBuffer[i].getB() != tmpBuffer[i].getB()) {
+			project::Color& oldC = oldBuffer[i];
+			project::Color& tmpC = tmpBuffer[i];
+			if (oldC.r != tmpC.r || oldC.g != tmpC.g || oldC.b != tmpC.b) {
 				same = false;
 				break;
 			}
@@ -92,9 +95,11 @@ bool importData() {
 
 		//set buffer to tmpBuffer
 		for (int i = 0; i < NB_LED; i++) {
-			buffer[i].setR(tmpBuffer[i].getR());
-			buffer[i].setG(tmpBuffer[i].getG());
-			buffer[i].setB(tmpBuffer[i].getB());
+			project::Color& buffC = buffer[i];
+			project::Color& tmpC = tmpBuffer[i];
+			buffC.r = tmpC.r;
+			buffC.g = tmpC.g;
+			buffC.b = tmpC.b;
 		}
 		bufferMutex.unlock();
 		thread Texport(exportData);
@@ -102,9 +107,11 @@ bool importData() {
 
 		//save buffer in oldBuffer
 		for (int i = 0; i < NB_LED; i++) {
-			oldBuffer[i].setR(buffer[i].getR());
-			oldBuffer[i].setG(buffer[i].getG());
-			oldBuffer[i].setB(buffer[i].getB());
+			project::Color& oldC = oldBuffer[i];
+			project::Color& buffC = buffer[i];
+			oldC.r = buffC.r;
+			oldC.g = buffC.g;
+			oldC.b = buffC.b;
 		}
 	}
 }
@@ -114,9 +121,10 @@ void exportData() {
 
 	arduino->writeSerialPort(1);
 	for (int i = 0; i < NB_LED; i++) {
-		arduino->writeSerialPort(char(buffer[i].getR() / AVERAGE));
-		arduino->writeSerialPort(char(buffer[i].getG() / AVERAGE));
-		arduino->writeSerialPort(char(buffer[i].getB() / AVERAGE));
+		project::Color& c = buffer[i];
+		arduino->writeSerialPort(c.r / AVERAGE);
+		arduino->writeSerialPort(c.g / AVERAGE);
+		arduino->writeSerialPort(c.b / AVERAGE);
 	}
 	bufferMutex.unlock();
 }
@@ -149,7 +157,7 @@ void initScreenshot()
 	bmInfo.bmiHeader.biSizeImage = WIDTH * 3 * HEIGHT;
 	bmInfo.bmiHeader.biClrUsed = 0;
 	bmInfo.bmiHeader.biClrImportant = 0;
-	memBM = CreateDIBSection(memDC, &bmInfo, DIB_RGB_COLORS, (void**)(&bmPointer), NULL, NULL); //TODO: DIB_PAL_COLORS ??
+	memBM = CreateDIBSection(memDC, &bmInfo, DIB_PAL_COLORS, (void**)(&bmPointer), NULL, NULL);
 
 	oldMemBM = (HBITMAP)SelectObject(memDC, memBM);
 }

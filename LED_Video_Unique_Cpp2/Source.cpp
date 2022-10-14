@@ -24,9 +24,9 @@ using namespace Gdiplus;
 
 const char* portName;
 SerialPort* arduino;
-project::Color tmpBuffer[NB_LED];
-project::Color buffer[NB_LED];
-project::Color oldBuffer[NB_LED];
+project::Color* tmpBuffer;
+project::Color* buffer;
+project::Color* oldBuffer;
 
 ULONG_PTR gdiplusToken;
 HDC winDC, memDC;
@@ -44,13 +44,13 @@ void initArduino();
 void initScreenshot();
 void cleanup();
 
-int main() {		
+int main() {
 	init();
 
 	importData();
 
 	cleanup();
-    return 0;
+	return 0;
 }
 
 bool importData() {
@@ -71,9 +71,9 @@ bool importData() {
 		for (int y = 0; y < HEIGHT; y += ECH_Y) {
 			for (int x = 0; x < WIDTH; x += ECH_X) {
 				project::Color& c = tmpBuffer[x / PORTION];
-				c.b += bmPointer[x * 3 + y * 3 * WIDTH] >> 1; // * 3 for pixel depth
-				c.g += bmPointer[x * 3 + 1 + y * 3 * WIDTH] >> 1;
-				c.r += bmPointer[x * 3 + 2 + y * 3 * WIDTH] >> 1;
+				c.b += bmPointer[x * 4 + y * 4 * WIDTH] >> 1; // * 3 for pixel depth
+				c.g += bmPointer[x * 4 + 1 + y * 4 * WIDTH] >> 1;
+				c.r += bmPointer[x * 4 + 2 + y * 4 * WIDTH] >> 1;
 			}
 		}
 
@@ -94,14 +94,13 @@ bool importData() {
 		bufferMutex.lock();
 
 		//set buffer to tmpBuffer
-		for (int i = 0; i < NB_LED; i++) {
-			project::Color& buffC = buffer[i];
-			project::Color& tmpC = tmpBuffer[i];
-			buffC.r = tmpC.r;
-			buffC.g = tmpC.g;
-			buffC.b = tmpC.b;
-		}
+		project::Color* tmp;
+		tmp = buffer;
+		buffer = tmpBuffer;
+		tmpBuffer = tmp;
+
 		bufferMutex.unlock();
+
 		thread Texport(exportData);
 		Texport.detach();
 
@@ -144,6 +143,10 @@ void initGDI()
 
 void initScreenshot()
 {
+	tmpBuffer = new project::Color[NB_LED];
+	buffer = new project::Color[NB_LED];
+	oldBuffer = new project::Color[NB_LED];
+
 	winDC = ::GetDC(NULL);
 	memDC = CreateCompatibleDC(winDC);
 
@@ -170,6 +173,10 @@ void initArduino()
 
 void cleanup()
 {
+	delete[] tmpBuffer;
+	delete[] buffer;
+	delete[] oldBuffer;
+
 	//Shutdown GDI+
 	SelectObject(memDC, oldMemBM);
 	DeleteDC(memDC);

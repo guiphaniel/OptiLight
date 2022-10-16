@@ -16,17 +16,16 @@
 #define NB_LED 40
 #define ECH_X 20
 #define ECH_Y 20
-#define AVERAGE (int(1 + ((WIDTH / NB_LED) - 1) / ECH_X) * int(1 + (HEIGHT - 1) / ECH_Y))
 #define PORTION (WIDTH / NB_LED)
+#define AVERAGE (int(1 + ((WIDTH / NB_LED) - 1) / ECH_X) * int(1 + (HEIGHT - 1) / ECH_Y))
 
 using namespace std;
 using namespace Gdiplus;
 
 const char* portName;
 SerialPort* arduino;
-project::Color* tmpBuffer;
+project::Color* newBuffer;
 project::Color* buffer;
-project::Color* oldBuffer;
 
 ULONG_PTR gdiplusToken;
 HDC winDC, memDC;
@@ -34,7 +33,6 @@ HBITMAP oldMemBM, memBM;
 BYTE* bmPointer;
 
 mutex bufferMutex;
-bool newBuffer = false;
 
 bool importData();
 void exportData();
@@ -57,7 +55,7 @@ bool importData() {
 	while (true) {
 		//reinit tmpBuffer
 		for (int i = 0; i < NB_LED; i++) {
-			project::Color& c = tmpBuffer[i];
+			project::Color& c = newBuffer[i];
 			c.r = c.g = c.b = 0;
 		}
 
@@ -70,8 +68,8 @@ bool importData() {
 		//fill tmpBuffer ; nb: bmPointer is BGR 
 		for (int y = 0; y < HEIGHT; y += ECH_Y) {
 			for (int x = 0; x < WIDTH; x += ECH_X) {
-				project::Color& c = tmpBuffer[x / PORTION];
-				c.b += bmPointer[x * 4 + y * 4 * WIDTH] >> 1; // * 3 for pixel depth
+				project::Color& c = newBuffer[x / PORTION];
+				c.b += bmPointer[x * 4 + y * 4 * WIDTH] >> 1; // * 4 for RGBA
 				c.g += bmPointer[x * 4 + 1 + y * 4 * WIDTH] >> 1;
 				c.r += bmPointer[x * 4 + 2 + y * 4 * WIDTH] >> 1;
 			}
@@ -80,9 +78,9 @@ bool importData() {
 		//check if image is same as previous one
 		bool same = true;
 		for (int i = 0; i < NB_LED; i++) {
-			project::Color& oldC = oldBuffer[i];
-			project::Color& tmpC = tmpBuffer[i];
-			if (oldC.r != tmpC.r || oldC.g != tmpC.g || oldC.b != tmpC.b) {
+			project::Color& bufferC = buffer[i];
+			project::Color& newC = newBuffer[i];
+			if (bufferC.r != newC.r || bufferC.g != newC.g || bufferC.b != newC.b) {
 				same = false;
 				break;
 			}
@@ -93,25 +91,16 @@ bool importData() {
 
 		bufferMutex.lock();
 
-		//set buffer to tmpBuffer
+		//set buffer to newBuffer
 		project::Color* tmp;
 		tmp = buffer;
-		buffer = tmpBuffer;
-		tmpBuffer = tmp;
+		buffer = newBuffer;
+		newBuffer = tmp;
 
 		bufferMutex.unlock();
 
 		thread Texport(exportData);
 		Texport.detach();
-
-		//save buffer in oldBuffer
-		for (int i = 0; i < NB_LED; i++) {
-			project::Color& oldC = oldBuffer[i];
-			project::Color& buffC = buffer[i];
-			oldC.r = buffC.r;
-			oldC.g = buffC.g;
-			oldC.b = buffC.b;
-		}
 	}
 }
 
@@ -143,9 +132,8 @@ void initGDI()
 
 void initScreenshot()
 {
-	tmpBuffer = new project::Color[NB_LED];
+	newBuffer = new project::Color[NB_LED];
 	buffer = new project::Color[NB_LED];
-	oldBuffer = new project::Color[NB_LED];
 
 	winDC = ::GetDC(NULL);
 	memDC = CreateCompatibleDC(winDC);
@@ -173,9 +161,8 @@ void initArduino()
 
 void cleanup()
 {
-	delete[] tmpBuffer;
+	delete[] newBuffer;
 	delete[] buffer;
-	delete[] oldBuffer;
 
 	//Shutdown GDI+
 	SelectObject(memDC, oldMemBM);

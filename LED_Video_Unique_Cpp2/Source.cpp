@@ -69,9 +69,9 @@ bool importData() {
 		for (int y = 0; y < HEIGHT; y += ECH_Y) {
 			for (int x = 0; x < WIDTH; x += ECH_X) {
 				project::Color& c = newBuffer[x / PORTION];
-				c.b += bmPointer[x * 4 + y * 4 * WIDTH] >> 1; // * 4 for RGBA
-				c.g += bmPointer[x * 4 + 1 + y * 4 * WIDTH] >> 1;
-				c.r += bmPointer[x * 4 + 2 + y * 4 * WIDTH] >> 1;
+				c.b += bmPointer[x * 4 + y * 4 * WIDTH]; // * 4 for RGBA
+				c.g += bmPointer[x * 4 + 1 + y * 4 * WIDTH];
+				c.r += bmPointer[x * 4 + 2 + y * 4 * WIDTH];
 			}
 		}
 
@@ -105,16 +105,18 @@ bool importData() {
 }
 
 void exportData() {
-	bufferMutex.lock();
+	arduino->writeSerialPort(200);
 
-	arduino->writeSerialPort(1);
+	bufferMutex.lock();
 	for (int i = 0; i < NB_LED; i++) {
 		project::Color& c = buffer[i];
-		arduino->writeSerialPort(c.r / AVERAGE);
-		arduino->writeSerialPort(c.g / AVERAGE);
-		arduino->writeSerialPort(c.b / AVERAGE);
+		arduino->writeSerialPort((c.r / AVERAGE) >> 1);
+		arduino->writeSerialPort((c.g / AVERAGE) >> 1);
+		arduino->writeSerialPort((c.b / AVERAGE) >> 1);
 	}
 	bufferMutex.unlock();
+
+	arduino->writeSerialPort(201);
 }
 
 void init()

@@ -40,7 +40,7 @@ SerialPort::SerialPort(const char* portName)
         else
         {
             dcbSerialParameters.BaudRate = CBR_57600;
-            dcbSerialParameters.ByteSize = 7;
+            dcbSerialParameters.ByteSize = 8;
             dcbSerialParameters.StopBits = ONESTOPBIT;
             dcbSerialParameters.Parity = NOPARITY;
             dcbSerialParameters.fDtrControl = DTR_CONTROL_ENABLE;

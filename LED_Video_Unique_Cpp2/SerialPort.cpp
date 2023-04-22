@@ -39,7 +39,7 @@ SerialPort::SerialPort(const char* portName)
         }
         else
         {
-            dcbSerialParameters.BaudRate = CBR_57600;
+            dcbSerialParameters.BaudRate = CBR_115200;
             dcbSerialParameters.ByteSize = 8;
             dcbSerialParameters.StopBits = ONESTOPBIT;
             dcbSerialParameters.Parity = NOPARITY;
@@ -105,6 +105,20 @@ bool SerialPort::writeSerialPort(const uint8_t& buffer)
 {
     DWORD bytesSend;
     if (!WriteFile(this->handler, (void*)&buffer, 1, &bytesSend, 0))
+    {
+        ClearCommError(this->handler, &this->errors, &this->status);
+        return false;
+    }
+    return true;
+}
+
+// Sending provided buffer to serial port;
+// returns true if succeed, false if not
+bool SerialPort::writeSerialPort(const uint8_t* buffer, int size)
+{
+    DWORD bytesSend;
+
+    if (!WriteFile(this->handler, buffer, size, &bytesSend, 0))
     {
         ClearCommError(this->handler, &this->errors, &this->status);
         return false;

@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <mutex> 
 #include <thread> 
+#include <condition_variable>
 #include <gdiplus.h>
 #include <memory>
 #include <string>
@@ -14,8 +15,8 @@
 #define HEIGHT 1080
 
 #define NB_LED 40
-#define ECH_X 20
-#define ECH_Y 20
+#define ECH_X 24
+#define ECH_Y 27
 #define PORTION (WIDTH / NB_LED)
 #define AVERAGE (int(1 + ((WIDTH / NB_LED) - 1) / ECH_X) * int(1 + (HEIGHT - 1) / ECH_Y))
 
@@ -24,15 +25,21 @@ using namespace Gdiplus;
 
 const char* portName;
 SerialPort* arduino;
-project::Color* newBuffer;
-project::Color* buffer;
+project::Color* processingBuffer;
+project::Color* screenshotBuffer;
+project::Color* tmpBuffer;
+uint64_t tmpChecksum;
+
+mutex newTmpAvailableMutex;
+condition_variable newTmpAvailableCv;
+bool newTmpAvailable;
 
 ULONG_PTR gdiplusToken;
 HDC winDC, memDC;
 HBITMAP oldMemBM, memBM;
 BYTE* bmPointer;
 
-mutex bufferMutex;
+mutex tmpBufferMutex;
 
 bool importData();
 void exportData();
@@ -45,7 +52,11 @@ void cleanup();
 int main() {
 	init();
 
-	importData();
+	thread Texport(exportData);
+	Texport.detach();
+
+	thread Tscreenshot(importData);
+	Tscreenshot.join();
 
 	cleanup();
 	return 0;
@@ -53,70 +64,88 @@ int main() {
 
 bool importData() {
 	while (true) {
-		//reinit tmpBuffer
-		for (int i = 0; i < NB_LED; i++) {
-			project::Color& c = newBuffer[i];
-			c.r = c.g = c.b = 0;
-		}
-
 		//screen capture
 		if (!BitBlt(memDC, 0, 0, WIDTH, HEIGHT, winDC, 0, 0, SRCCOPY)) {
 			cout << "screenshot failed" << endl;
 			return false;
 		}
 
-		//fill tmpBuffer ; nb: bmPointer is BGR 
+		//fill screenshotBuffer ; nb: bmPointer is BGR 
+		bool reinit = true;
+		uint64_t checksum = 0;
 		for (int y = 0; y < HEIGHT; y += ECH_Y) {
 			for (int x = 0; x < WIDTH; x += ECH_X) {
-				project::Color& c = newBuffer[x / PORTION];
-				c.b += bmPointer[x * 4 + y * 4 * WIDTH]; // * 4 for RGBA
-				c.g += bmPointer[x * 4 + 1 + y * 4 * WIDTH];
-				c.r += bmPointer[x * 4 + 2 + y * 4 * WIDTH];
+				project::Color& c = screenshotBuffer[x / PORTION];
+
+				if (reinit)
+				{
+					c.b = bmPointer[x * 4 + y * WIDTH * 4]; // * 4 for RGBA
+					c.g = bmPointer[x * 4 + 1 + y * WIDTH * 4];
+					c.r = bmPointer[x * 4 + 2 + y * WIDTH * 4];
+
+					checksum += c.b + c.g + c.r;
+					checksum = checksum << 3 | checksum >> (sizeof(checksum) * 8 - 3); // rotate
+				}
+				else
+				{
+					c.b += bmPointer[x * 4 + y * WIDTH * 4]; // * 4 for RGBA
+					c.g += bmPointer[x * 4 + 1 + y * WIDTH * 4];
+					c.r += bmPointer[x * 4 + 2 + y * WIDTH * 4];
+
+					checksum += c.b + c.g + c.r;
+					checksum = checksum << 3 | checksum >> (sizeof(checksum) * 8 - 3); // rotate
+				}
 			}
+			reinit = false;
 		}
 
 		//check if image is same as previous one
-		bool same = true;
-		for (int i = 0; i < NB_LED; i++) {
-			project::Color& bufferC = buffer[i];
-			project::Color& newC = newBuffer[i];
-			if (bufferC.r != newC.r || bufferC.g != newC.g || bufferC.b != newC.b) {
-				same = false;
-				break;
-			}
-		}
-
-		if (same)
+		if (checksum != tmpChecksum)
+			tmpChecksum = checksum;
+		else
 			continue;
 
-		bufferMutex.lock();
+		tmpBufferMutex.lock();
+		swap(screenshotBuffer, tmpBuffer);
+		tmpBufferMutex.unlock();
 
-		//set buffer to newBuffer
-		project::Color* tmp;
-		tmp = buffer;
-		buffer = newBuffer;
-		newBuffer = tmp;
+		{
+			lock_guard<mutex> lk(newTmpAvailableMutex);
+			newTmpAvailable = true;
+		}
 
-		bufferMutex.unlock();
-
-		thread Texport(exportData);
-		Texport.detach();
+		newTmpAvailableCv.notify_one();
 	}
 }
 
-void exportData() {
-	arduino->writeSerialPort(200);
+void exportData() 
+{
+	while (true)
+	{
+		unique_lock<mutex> lk(newTmpAvailableMutex);
+		newTmpAvailableCv.wait(lk, [] {return newTmpAvailable; }); // wait unlock au moment d'attendre, et lock après 
+		newTmpAvailable = false;
+		lk.unlock();
 
-	bufferMutex.lock();
-	for (int i = 0; i < NB_LED; i++) {
-		project::Color& c = buffer[i];
-		arduino->writeSerialPort((c.r / AVERAGE) >> 1);
-		arduino->writeSerialPort((c.g / AVERAGE) >> 1);
-		arduino->writeSerialPort((c.b / AVERAGE) >> 1);
+		tmpBufferMutex.lock();
+		swap(tmpBuffer, processingBuffer);
+		tmpBufferMutex.unlock();
+
+		arduino->writeSerialPort(200);
+
+		uint8_t serialized[NB_LED * 3];
+		for (int i = 0; i < NB_LED; ++i) {
+			project::Color& c = processingBuffer[i];
+			serialized[i * 3] = (c.r / AVERAGE) >> 1;
+			serialized[i * 3 + 1] = (c.g / AVERAGE) >> 1;
+			serialized[i * 3 + 2] = (c.b / AVERAGE) >> 1;
+		}
+
+		arduino->writeSerialPort(serialized, NB_LED * 3);
+
+		arduino->writeSerialPort(201);
+
 	}
-	bufferMutex.unlock();
-
-	arduino->writeSerialPort(201);
 }
 
 void init()
@@ -134,8 +163,12 @@ void initGDI()
 
 void initScreenshot()
 {
-	newBuffer = new project::Color[NB_LED];
-	buffer = new project::Color[NB_LED];
+	tmpChecksum = 0;
+	newTmpAvailable = false;
+
+	screenshotBuffer = new project::Color[NB_LED];
+	tmpBuffer = new project::Color[NB_LED];
+	processingBuffer = new project::Color[NB_LED];
 
 	winDC = ::GetDC(NULL);
 	memDC = CreateCompatibleDC(winDC);
@@ -163,8 +196,9 @@ void initArduino()
 
 void cleanup()
 {
-	delete[] newBuffer;
-	delete[] buffer;
+	delete[] processingBuffer;
+	delete[] screenshotBuffer;
+	delete[] tmpBuffer;
 
 	//Shutdown GDI+
 	SelectObject(memDC, oldMemBM);

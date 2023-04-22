@@ -28,6 +28,7 @@ public:
 
     int readSerialPort(const char* buffer, unsigned int buf_size);
     bool writeSerialPort(const uint8_t& buffer);
+    bool writeSerialPort(const uint8_t* buffer, int size);
     bool isConnected();
     void closeSerial();
 };

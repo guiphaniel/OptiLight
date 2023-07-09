@@ -1,7 +1,7 @@
 #include <FastLED.h>
 
-#define NB_LED 40 // attention, le buffer de l'arduino n'est que de 64bits, donc il faut surveiller le "Serial.available() >= (NB_LED)*3". (NB_LED)*3 Doit être inférieur à 64. 
-#define LED_PIN 4
+#define NB_LED 40 // The number of leds
+#define LED_PIN 4 // The data pin. It must be a digital one (PWM or not)
 
 CRGB led[NB_LED];
 
@@ -12,7 +12,7 @@ int green;
 int blue;
 
 void setup() {
-  Serial.begin(115200, SERIAL_8N1); //57600 on ne met que 7 bits (car valeurs divisées par deux pour accelerer la transmission)
+  Serial.begin(115200, SERIAL_8N1); // 115200 is a good value (the higher, the faster, so less latency). But it can also cause data loss (if too fast), so consider lowering the value if you notice some frame loss.
   FastLED.addLeds<NEOPIXEL, LED_PIN>(led, NB_LED);
   clearSerialData();
 }

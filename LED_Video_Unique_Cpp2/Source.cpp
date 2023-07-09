@@ -8,15 +8,19 @@
 #include <gdiplus.h>
 #include <memory>
 #include <string>
-#include <Wincodec.h>             // we use WIC for saving images
+#include <Wincodec.h> // we use WIC for saving images
 #pragma comment (lib,"Gdiplus.lib")
 
-#define WIDTH 1920
-#define HEIGHT 1080
+#define WIDTH 1920 // Width of the screen
+#define HEIGHT 1080 // Heigth of the screen
 
-#define NB_LED 40
-#define ECH_X 24
+#define NB_LED 40 // The number of leds
+
+// The sampling on X and Y axis. A greater value means less samples (so less latency, but less accuracy). 
+// These values are empirical, so don't hesitate to change them, but keep in mind that they should be dividers of the screen size, so all leds are sampled the same amount of time
+#define ECH_X 24 
 #define ECH_Y 27
+
 #define PORTION (WIDTH / NB_LED)
 #define AVERAGE (int(1 + ((WIDTH / NB_LED) - 1) / ECH_X) * int(1 + (HEIGHT - 1) / ECH_Y))
 
@@ -99,7 +103,7 @@ bool importData() {
 			reinit = false;
 		}
 
-		//check if image is same as previous one
+		// check if the image is different from the previous one
 		if (checksum != tmpChecksum)
 			tmpChecksum = checksum;
 		else
@@ -123,7 +127,7 @@ void exportData()
 	while (true)
 	{
 		unique_lock<mutex> lk(newTmpAvailableMutex);
-		newTmpAvailableCv.wait(lk, [] {return newTmpAvailable; }); // wait unlock au moment d'attendre, et lock après 
+		newTmpAvailableCv.wait(lk, [] {return newTmpAvailable; });
 		newTmpAvailable = false;
 		lk.unlock();
 
@@ -131,7 +135,7 @@ void exportData()
 		swap(tmpBuffer, processingBuffer);
 		tmpBufferMutex.unlock();
 
-		arduino->writeSerialPort(200);
+		arduino->writeSerialPort(200); // start byte (the most significant bit is only used for end and start bytes)
 
 		uint8_t serialized[NB_LED * 3];
 		for (int i = 0; i < NB_LED; ++i) {
@@ -143,7 +147,7 @@ void exportData()
 
 		arduino->writeSerialPort(serialized, NB_LED * 3);
 
-		arduino->writeSerialPort(201);
+		arduino->writeSerialPort(201); // end byte
 
 	}
 }

@@ -1,40 +1,49 @@
 #include <iostream>
-#include "Couleur.h"
+#include "Color.h"
 #include "SerialPort.hpp"
 #include <windows.h>
 #include <mutex> 
 #include <thread> 
+#include <condition_variable>
 #include <gdiplus.h>
 #include <memory>
 #include <string>
-#include <Wincodec.h>             // we use WIC for saving images
+#include <Wincodec.h> // we use WIC for saving images
 #pragma comment (lib,"Gdiplus.lib")
 
-#define WIDTH 1920
-#define HEIGHT 1080
+#define WIDTH 1920 // Width of the screen
+#define HEIGHT 1080 // Heigth of the screen
 
-#define NB_LED 40
-#define ECH_X 20
-#define ECH_Y 20
-#define AVERAGE (int(1 + ((WIDTH / NB_LED) - 1) / ECH_X) * int(1 + (HEIGHT - 1) / ECH_Y))
+#define NB_LED 40 // The number of leds
+
+// The sampling on X and Y axis. A greater value means less samples (so less latency, but less accuracy). 
+// These values are empirical, so don't hesitate to change them, but keep in mind that they should be dividers of the screen size, so all leds are sampled the same amount of time
+#define ECH_X 24 
+#define ECH_Y 27
+
 #define PORTION (WIDTH / NB_LED)
+#define AVERAGE (int(1 + ((WIDTH / NB_LED) - 1) / ECH_X) * int(1 + (HEIGHT - 1) / ECH_Y))
 
 using namespace std;
 using namespace Gdiplus;
 
 const char* portName;
 SerialPort* arduino;
-Couleur tmpBuffer[NB_LED];
-Couleur buffer[NB_LED];
-Couleur oldBuffer[NB_LED];
+project::Color* processingBuffer;
+project::Color* screenshotBuffer;
+project::Color* tmpBuffer;
+uint64_t tmpChecksum;
+
+mutex newTmpAvailableMutex;
+condition_variable newTmpAvailableCv;
+bool newTmpAvailable;
 
 ULONG_PTR gdiplusToken;
-Bitmap* p_bmp;
-HDC scrdc, memdc;
-HBITMAP membit;
+HDC winDC, memDC;
+HBITMAP oldMemBM, memBM;
+BYTE* bmPointer;
 
-mutex bufferMutex;
-bool newBuffer = false;
+mutex tmpBufferMutex;
 
 bool importData();
 void exportData();
@@ -44,88 +53,103 @@ void initArduino();
 void initScreenshot();
 void cleanup();
 
-int main() {		
+int main() {
 	init();
 
-	thread Timport(importData);
-	Timport.join();
+	thread Texport(exportData);
+	Texport.detach();
+
+	thread Tscreenshot(importData);
+	Tscreenshot.join();
 
 	cleanup();
-    return 0;
+	return 0;
 }
 
 bool importData() {
 	while (true) {
-		//reinit tmpBuffer
-		for (int i = 0; i < NB_LED; i++) {
-			tmpBuffer[i].reinit();
-		}
-
 		//screen capture
-		HBITMAP hOldBitmap = (HBITMAP)SelectObject(memdc, membit);
-		if (!BitBlt(memdc, 0, 0, WIDTH, HEIGHT, scrdc, 0, 0, SRCCOPY)) {
+		if (!BitBlt(memDC, 0, 0, WIDTH, HEIGHT, winDC, 0, 0, SRCCOPY)) {
 			cout << "screenshot failed" << endl;
 			return false;
 		}
 
-		p_bmp = Bitmap::FromHBITMAP(membit, NULL);
-
-		//fill tmpBuffer
-		Color c;
+		//fill screenshotBuffer ; nb: bmPointer is BGR 
+		bool reinit = true;
+		uint64_t checksum = 0;
 		for (int y = 0; y < HEIGHT; y += ECH_Y) {
 			for (int x = 0; x < WIDTH; x += ECH_X) {
-				p_bmp->GetPixel(x, y, &c);
-				ARGB cValue = c.GetValue();
-				tmpBuffer[x / PORTION].addR((cValue & 0xFF0000) >> 17);
-				tmpBuffer[x / PORTION].addG((cValue & 0xFF00) >> 9);
-				tmpBuffer[x / PORTION].addB((cValue & 0xFF) >> 1);
-			}
-		}
-		delete p_bmp;
+				project::Color& c = screenshotBuffer[x / PORTION];
 
-		//check if image is same as previous one
-		bool same = true;
-		for (int i = 0; i < NB_LED; i++) {
-			if (oldBuffer[i].getR() != tmpBuffer[i].getR() || oldBuffer[i].getG() != tmpBuffer[i].getG() || oldBuffer[i].getB() != tmpBuffer[i].getB()) {
-				same = false;
-				break;
+				if (reinit)
+				{
+					c.b = bmPointer[x * 4 + y * WIDTH * 4]; // * 4 for RGBA
+					c.g = bmPointer[x * 4 + 1 + y * WIDTH * 4];
+					c.r = bmPointer[x * 4 + 2 + y * WIDTH * 4];
+
+					checksum += c.b + c.g + c.r;
+					checksum = checksum << 3 | checksum >> (sizeof(checksum) * 8 - 3); // rotate
+				}
+				else
+				{
+					c.b += bmPointer[x * 4 + y * WIDTH * 4]; // * 4 for RGBA
+					c.g += bmPointer[x * 4 + 1 + y * WIDTH * 4];
+					c.r += bmPointer[x * 4 + 2 + y * WIDTH * 4];
+
+					checksum += c.b + c.g + c.r;
+					checksum = checksum << 3 | checksum >> (sizeof(checksum) * 8 - 3); // rotate
+				}
 			}
+			reinit = false;
 		}
 
-		if (same)
+		// check if the image is different from the previous one
+		if (checksum != tmpChecksum)
+			tmpChecksum = checksum;
+		else
 			continue;
 
-		bufferMutex.lock();
+		tmpBufferMutex.lock();
+		swap(screenshotBuffer, tmpBuffer);
+		tmpBufferMutex.unlock();
 
-		//set buffer to tmpBuffer
-		for (int i = 0; i < NB_LED; i++) {
-			buffer[i].setR(tmpBuffer[i].getR());
-			buffer[i].setG(tmpBuffer[i].getG());
-			buffer[i].setB(tmpBuffer[i].getB());
+		{
+			lock_guard<mutex> lk(newTmpAvailableMutex);
+			newTmpAvailable = true;
 		}
-		bufferMutex.unlock();
-		thread Texport(exportData);
-		Texport.detach();
 
-		//save buffer in oldBuffer
-		for (int i = 0; i < NB_LED; i++) {
-			oldBuffer[i].setR(buffer[i].getR());
-			oldBuffer[i].setG(buffer[i].getG());
-			oldBuffer[i].setB(buffer[i].getB());
-		}
+		newTmpAvailableCv.notify_one();
 	}
 }
 
-void exportData() {
-	bufferMutex.lock();
+void exportData() 
+{
+	while (true)
+	{
+		unique_lock<mutex> lk(newTmpAvailableMutex);
+		newTmpAvailableCv.wait(lk, [] {return newTmpAvailable; });
+		newTmpAvailable = false;
+		lk.unlock();
 
-	arduino->writeSerialPort(1);
-	for (int i = 0; i < NB_LED; i++) {
-		arduino->writeSerialPort(char(buffer[i].getR() / AVERAGE));
-		arduino->writeSerialPort(char(buffer[i].getG() / AVERAGE));
-		arduino->writeSerialPort(char(buffer[i].getB() / AVERAGE));
+		tmpBufferMutex.lock();
+		swap(tmpBuffer, processingBuffer);
+		tmpBufferMutex.unlock();
+
+		arduino->writeSerialPort(200); // start byte (the most significant bit is only used for end and start bytes)
+
+		uint8_t serialized[NB_LED * 3];
+		for (int i = 0; i < NB_LED; ++i) {
+			project::Color& c = processingBuffer[i];
+			serialized[i * 3] = (c.r / AVERAGE) >> 1;
+			serialized[i * 3 + 1] = (c.g / AVERAGE) >> 1;
+			serialized[i * 3 + 2] = (c.b / AVERAGE) >> 1;
+		}
+
+		arduino->writeSerialPort(serialized, NB_LED * 3);
+
+		arduino->writeSerialPort(201); // end byte
+
 	}
-	bufferMutex.unlock();
 }
 
 void init()
@@ -143,9 +167,29 @@ void initGDI()
 
 void initScreenshot()
 {
-	scrdc = ::GetDC(NULL);
-	memdc = CreateCompatibleDC(scrdc);
-	membit = CreateCompatibleBitmap(scrdc, WIDTH, HEIGHT);
+	tmpChecksum = 0;
+	newTmpAvailable = false;
+
+	screenshotBuffer = new project::Color[NB_LED];
+	tmpBuffer = new project::Color[NB_LED];
+	processingBuffer = new project::Color[NB_LED];
+
+	winDC = ::GetDC(NULL);
+	memDC = CreateCompatibleDC(winDC);
+
+	BITMAPINFO bmInfo;
+	bmInfo.bmiHeader.biSize = sizeof(bmInfo.bmiHeader);
+	bmInfo.bmiHeader.biWidth = WIDTH;
+	bmInfo.bmiHeader.biHeight = HEIGHT;
+	bmInfo.bmiHeader.biPlanes = 1;
+	bmInfo.bmiHeader.biBitCount = 32;
+	bmInfo.bmiHeader.biCompression = BI_RGB;
+	bmInfo.bmiHeader.biSizeImage = WIDTH * 3 * HEIGHT;
+	bmInfo.bmiHeader.biClrUsed = 0;
+	bmInfo.bmiHeader.biClrImportant = 0;
+	memBM = CreateDIBSection(memDC, &bmInfo, DIB_PAL_COLORS, (void**)(&bmPointer), NULL, NULL);
+
+	oldMemBM = (HBITMAP)SelectObject(memDC, memBM);
 }
 
 void initArduino()
@@ -156,7 +200,13 @@ void initArduino()
 
 void cleanup()
 {
+	delete[] processingBuffer;
+	delete[] screenshotBuffer;
+	delete[] tmpBuffer;
+
 	//Shutdown GDI+
+	SelectObject(memDC, oldMemBM);
+	DeleteDC(memDC);
 	GdiplusShutdown(gdiplusToken);
 
 	delete arduino;
